@@ -1,0 +1,57 @@
+name: Build latest IPA (temporary)
+
+on:
+  push:
+    branches:
+      - build-latest-ipa-20260928
+
+permissions:
+  contents: read
+
+jobs:
+  build-tweaks:
+    uses: ./.github/workflows/_build_tweaks.yml
+    with:
+      enable_youpip: false
+      enable_ytuhd: false
+      enable_yq: false
+      enable_ryd: false
+      enable_ytabc: false
+      enable_demc: false
+      tweak_version: "5.2.2"
+
+  package:
+    name: Package latest IPA
+    runs-on: macos-latest
+    needs: build-tweaks
+    steps:
+      - name: Download built tweak
+        uses: actions/download-artifact@v8
+        with:
+          name: built-debs
+          path: ${{ github.workspace }}
+
+      - name: Download previous owned IPA asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fL             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/octet-stream"             -H "X-GitHub-Api-Version: 2022-11-28"             "https://api.github.com/repos/${{ github.repository }}/releases/assets/360053934"             -o youtube-base.ipa
+          file youtube-base.ipa
+          test -s youtube-base.ipa
+
+      - name: Install cyan
+        run: pipx install --force https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+
+      - name: Inject YouTube Plus 5.2.2
+        run: |
+          cyan -i youtube-base.ipa             -o YouTubePlus_5.2.2.ipa             -uwef ytplus.deb OpenYoutubeSafariExtension.appex             -n "YouTube"             -b com.google.ios.youtube
+          test -s YouTubePlus_5.2.2.ipa
+          shasum -a 256 YouTubePlus_5.2.2.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: YouTubePlus_5.2.2-ipa
+          path: YouTubePlus_5.2.2.ipa
+          retention-days: 7
+          compression-level: 0
