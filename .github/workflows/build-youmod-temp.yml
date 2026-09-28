@@ -1,0 +1,201 @@
+name: Build latest YouMod IPA (temp)
+
+on:
+  push:
+    branches:
+      - build-youmod-latest-20260928b
+
+concurrency:
+  group: build-youmod-latest-20260928b
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download existing user-owned YouTube IPA base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p base
+          gh release download ytp-1 --repo "${{ github.repository }}" --pattern "*.ipa" --dir base
+          BASE_IPA="$(find base -type f -name '*.ipa' | head -1)"
+          test -n "$BASE_IPA"
+          cp "$BASE_IPA" youtube-modified.ipa
+          file youtube-modified.ipa
+
+      - name: Remove previous YTLite injections
+        run: |
+          rm -rf cleanwork
+          mkdir cleanwork
+          cd cleanwork
+          unzip -q ../youtube-modified.ipa
+
+          python3 - <<'PY'
+          import os, struct, shutil
+
+          app = "Payload/YouTube.app"
+          exe = os.path.join(app, "YouTube")
+          banned = {
+              "YTLite.dylib",
+              "YouPiP.dylib",
+              "YTUHD.dylib",
+              "YouQuality.dylib",
+              "YouTubeDislikesReturn.dylib",
+              "DontEatMyContent.dylib",
+              "YTVideoOverlay.dylib",
+              "YouGroupSettings.dylib",
+          }
+
+          with open(exe, "rb") as f:
+              data = bytearray(f.read())
+
+          magic = struct.unpack_from("<I", data, 0)[0]
+          if magic != 0xfeedfacf:
+              raise SystemExit(f"Unexpected Mach-O magic: {magic:#x}")
+
+          ncmds, sizeofcmds = struct.unpack_from("<II", data, 16)
+          off = 32
+          kept = []
+          removed = []
+
+          dylib_cmds = {
+              0x0c, 0x0d, 0x18, 0x80000018,
+              0x1f, 0x8000001f, 0x23, 0x80000023,
+          }
+
+          for _ in range(ncmds):
+              cmd, cmdsize = struct.unpack_from("<II", data, off)
+              chunk = bytes(data[off:off + cmdsize])
+              name = None
+              if cmd in dylib_cmds and cmdsize >= 24:
+                  nameoff = struct.unpack_from("<I", data, off + 8)[0]
+                  if 0 < nameoff < cmdsize:
+                      start = off + nameoff
+                      end = data.find(0, start, off + cmdsize)
+                      if end != -1:
+                          name = bytes(data[start:end]).decode("utf-8", "replace")
+
+              if name and os.path.basename(name) in banned:
+                  removed.append(name)
+              else:
+                  kept.append(chunk)
+              off += cmdsize
+
+          newblob = b"".join(kept)
+          if len(newblob) > sizeofcmds:
+              raise SystemExit("Load command rewrite overflow")
+
+          start = 32
+          end = start + sizeofcmds
+          data[start:start + len(newblob)] = newblob
+          data[start + len(newblob):end] = b"\0" * (sizeofcmds - len(newblob))
+          struct.pack_into("<II", data, 16, len(kept), len(newblob))
+
+          with open(exe, "wb") as f:
+              f.write(data)
+
+          remove_paths = [
+              "YouQuality.bundle",
+              "YouPiP.bundle",
+              "DontEatMyContent.bundle",
+              "YTUHD.bundle",
+              "YTVideoOverlay.bundle",
+              "YouGroupSettings.bundle",
+              "YTLite.bundle",
+              "PlugIns/OpenYoutubeSafariExtension.appex",
+              "Frameworks/YouPiP.dylib",
+              "Frameworks/YTLite.dylib",
+              "Frameworks/YouGroupSettings.dylib",
+              "Frameworks/DontEatMyContent.dylib",
+              "Frameworks/YTUHD.dylib",
+              "Frameworks/YTVideoOverlay.dylib",
+              "Frameworks/YouTubeDislikesReturn.dylib",
+              "Frameworks/YouQuality.dylib",
+              "Frameworks/CydiaSubstrate.framework",
+          ]
+
+          for rel in remove_paths:
+              p = os.path.join(app, rel)
+              if os.path.isdir(p):
+                  shutil.rmtree(p)
+              elif os.path.exists(p):
+                  os.remove(p)
+
+          print(f"Removed {len(removed)} old injected load commands")
+          for x in removed:
+              print(" -", x)
+          PY
+
+          zip -qry ../youtube-clean.ipa Payload
+          cd ..
+          file youtube-clean.ipa
+
+      - name: Read YouTube version
+        run: |
+          rm -rf ytver
+          unzip -q youtube-clean.ipa 'Payload/YouTube.app/Info.plist' -d ytver
+          YT_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' ytver/Payload/YouTube.app/Info.plist)
+          echo "YT_VERSION=$YT_VERSION" >> "$GITHUB_ENV"
+          echo "YouTube base version: $YT_VERSION"
+
+      - name: Install build dependencies
+        run: |
+          brew install make ldid
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "THEOS=${{ github.workspace }}/theos" >> "$GITHUB_ENV"
+
+      - name: Setup Theos and SDK
+        run: |
+          git clone --quiet --depth=1 --recurse-submodules https://github.com/roothide/theos.git
+          git clone --quiet --depth=1 -n --filter=tree:0 https://github.com/Tonwalter888/iOS-SDKs.git
+          cd iOS-SDKs
+          git sparse-checkout set --no-cone iPhoneOS26.5.sdk
+          git checkout --quiet
+          mv *.sdk "$THEOS/sdks"
+          cd ..
+          git clone --quiet --depth=1 https://github.com/PoomSmart/YouTubeHeader.git "$THEOS/include/YouTubeHeader"
+          git clone --quiet --depth=1 https://github.com/PoomSmart/PSHeader.git "$THEOS/include/PSHeader"
+
+      - name: Checkout latest YouMod fork
+        uses: actions/checkout@v7
+        with:
+          repository: Inupedia/YouMod
+          ref: main
+          path: YouMod
+
+      - name: Build latest YouMod
+        run: |
+          cd YouMod
+          YOUMOD_VERSION=$(grep '^Version:' control | cut -d ' ' -f2)
+          echo "YOUMOD_VERSION=$YOUMOD_VERSION" >> "$GITHUB_ENV"
+          make clean package DEBUG=0 FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          cp packages/*.deb ../youmod.deb
+          cd ..
+          ls -lh youmod.deb
+
+      - name: Install cyan
+        run: pipx install https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+
+      - name: Inject YouMod into cleaned IPA
+        run: |
+          cyan -i youtube-clean.ipa             -o "YouMod_${YT_VERSION}_v${YOUMOD_VERSION}.ipa"             -uwef youmod.deb             -n "YouTube"             -b com.google.ios.youtube
+          ls -lh "YouMod_${YT_VERSION}_v${YOUMOD_VERSION}.ipa"
+
+      - name: Verify output
+        run: |
+          OUTPUT="YouMod_${YT_VERSION}_v${YOUMOD_VERSION}.ipa"
+          unzip -t "$OUTPUT" >/dev/null
+          unzip -l "$OUTPUT" | grep -E 'YouMod|CydiaSubstrate' | head -30 || true
+          shasum -a 256 "$OUTPUT"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: YouMod_latest_ipa
+          path: YouMod_*.ipa
+          if-no-files-found: error
+          overwrite: true
