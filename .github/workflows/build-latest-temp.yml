@@ -18,10 +18,11 @@ jobs:
       enable_ryd: false
       enable_ytabc: false
       enable_demc: false
-      tweak_version: "5.2.2"
+      tweak_version: ""
+      tweak_url: "https://github.com/dayanch96/YTLite/releases/download/v6.0-b1/com.dvntm.ytlite_6.0.b1_iphoneos-arm.deb"
 
   package:
-    name: Package latest IPA
+    name: Package latest beta IPA
     runs-on: macos-latest
     needs: build-tweaks
     permissions:
@@ -47,16 +48,16 @@ jobs:
       - name: Install cyan
         run: pipx install --force https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
 
-      - name: Inject YouTube Plus 5.2.2
+      - name: Inject YouTube Plus 6.0-b1
         run: |
-          cyan -i youtube-base.ipa             -o YouTubePlus_5.2.2.ipa             -uwef ytplus.deb OpenYoutubeSafariExtension.appex             -n "YouTube"             -b com.google.ios.youtube
-          test -s YouTubePlus_5.2.2.ipa
-          shasum -a 256 YouTubePlus_5.2.2.ipa
+          cyan -i youtube-base.ipa             -o YouTubePlus_6.0-b1.ipa             -uwef ytplus.deb OpenYoutubeSafariExtension.appex             -n "YouTube"             -b com.google.ios.youtube
+          test -s YouTubePlus_6.0-b1.ipa
+          shasum -a 256 YouTubePlus_6.0-b1.ipa
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v7
         with:
-          name: YouTubePlus_5.2.2-ipa
-          path: YouTubePlus_5.2.2.ipa
+          name: YouTubePlus_6.0-b1-ipa
+          path: YouTubePlus_6.0-b1.ipa
           retention-days: 7
           compression-level: 0
